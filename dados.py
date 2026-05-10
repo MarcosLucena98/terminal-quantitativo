@@ -1,6 +1,15 @@
 import yfinance as yf
 import pandas as pd
+import requests
 from config import PREMIO_RISCO_MERCADO, WACC_TETO, WACC_PISO
+
+# =========================================================
+# SESSÃO CUSTOMIZADA: BYPASS DO BLOQUEIO ANTI-BOT DO YAHOO
+# =========================================================
+sessao_yf = requests.Session()
+sessao_yf.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+})
 
 MAPA_SETORES = {
     "financial services": "banco",
@@ -11,7 +20,7 @@ MAPA_SETORES = {
     "consumer defensive": "consumo",
     "real estate": "fiis",
     "communication services": "telecom",
-    "consumer cyclical": "consumo" # <-- CORRIGIDO: Varejo agora é consumo
+    "consumer cyclical": "consumo"
 }
 
 def calcular_cagr(inicio, fim, anos):
@@ -30,7 +39,9 @@ def extrair_media_historica(df_financeiro, chaves_possiveis, anos=5):
 
 def buscar_dados(ticker, selic_atual):
     try:
-        acao = yf.Ticker(ticker)
+        # INJEÇÃO DA SESSÃO AQUI PARA EVITAR O ERRO 'INVALID CRUMB'
+        acao = yf.Ticker(ticker, session=sessao_yf)
+        
         info = acao.info
         financials = acao.financials
         cashflow = acao.cashflow
@@ -57,7 +68,7 @@ def buscar_dados(ticker, selic_atual):
             setor = "seguradora"
         elif ticker.startswith(("VALE", "CMIN")): 
             setor = "mineracao"
-        elif ticker.startswith(("B3SA")): # <-- CORRIGIDO: Tira a B3 de "banco"
+        elif ticker.startswith(("B3SA")): 
             setor = "crescimento"
 
         # =================================================
