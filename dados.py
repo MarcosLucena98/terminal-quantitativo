@@ -122,9 +122,28 @@ def buscar_dados(ticker, selic_atual):
                     cv_lucro = min(cv_bruto, 5.0) 
 
         # =================================================
-        # HIGIENIZAÇÃO DE DIVIDENDOS (TRAVA BAZIN)
+        # EXTRAÇÃO EXATA DE DIVIDENDOS (ÚLTIMOS 12 MESES)
         # =================================================
-        dy_ajustado = min((info.get("dividendYield", 0) or 0) * 100, 12.0)
+        dividendos_historico = acao.dividends
+        soma_dividendos_12m = 0
+        dy_real = 0
+
+        if not dividendos_historico.empty:
+            # Remove timezone para evitar conflitos na comparação de datas
+            dividendos_historico.index = dividendos_historico.index.tz_localize(None)
+            
+            # Define o "corte" do tempo: Exatamente 1 ano atrás a partir de hoje
+            inicio_12m = pd.Timestamp.now().tz_localize(None) - pd.DateOffset(years=1)
+            
+            # Filtra a tabela e soma apenas os proventos pagos dentro dessa janela
+            soma_dividendos_12m = dividendos_historico[dividendos_historico.index >= inicio_12m].sum()
+
+        # Calcula o DY Real baseado estritamente na nossa soma
+        if preco and preco > 0:
+            dy_real = (soma_dividendos_12m / preco) * 100
+
+        # Trava Bazin (Usa no máximo 12% para o valuation, mas o painel mostra o DY real)
+        dy_ajustado = min(dy_real, 12.0)
         dividendos_bazin = (dy_ajustado / 100) * preco if preco else 0
 
         # =================================================
@@ -151,7 +170,7 @@ def buscar_dados(ticker, selic_atual):
             "Setor": setor,
             "Empresa": info.get("longName", ticker),
             "Preço": round(preco, 2) if preco else None,
-            "DY (%)": round(dy_ajustado, 2),
+            "DY (%)": round(dy_real, 2),  # <-- Alterado para enviar a métrica real para a tela
             "Dividendos 12M": round(dividendos_bazin, 2),
             "ROE (%)": round(info.get("returnOnEquity", 0) * 100, 2) if info.get("returnOnEquity") else 0,
             "Margem (%)": round(margem * 100, 2) if margem else 0,
