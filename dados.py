@@ -1,19 +1,6 @@
 import yfinance as yf
 import pandas as pd
-import requests
 from config import PREMIO_RISCO_MERCADO, WACC_TETO, WACC_PISO
-
-# =========================================================
-# SESSÃO BLINDADA: SIMULANDO NAVEGADOR REAL COMPLETO
-# =========================================================
-sessao_yf = requests.Session()
-sessao_yf.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-    'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
-    'Cache-Control': 'no-cache',
-    'Pragma': 'no-cache',
-})
 
 MAPA_SETORES = {
     "financial services": "banco",
@@ -43,18 +30,31 @@ def extrair_media_historica(df_financeiro, chaves_possiveis, anos=5):
 
 def buscar_dados(ticker, selic_atual):
     try:
-        # INJEÇÃO DA SESSÃO AQUI PARA EVITAR O ERRO 'INVALID CRUMB'
-        acao = yf.Ticker(ticker, session=sessao_yf)
+        acao = yf.Ticker(ticker)
+        info = acao.info or {}
         
-        info = acao.info
+        # =================================================
+        # EXTRAÇÃO BLINDADA DE PREÇO (PLANO A e PLANO B)
+        # =================================================
+        preco = info.get("currentPrice") or info.get("regularMarketPrice")
+        
+        # PLANO B: Se o Yahoo "esquecer" de enviar o preço, puxamos pelo histórico diário
+        if not preco:
+            hist = acao.history(period="1d")
+            if not hist.empty:
+                preco = float(hist['Close'].iloc[-1])
+                
+        # Se mesmo assim não achar (ação paralisada/sem liquidez), pula e avisa
+        if not preco or preco <= 0:
+            print(f"⚠️ Preço não encontrado para {ticker}. Ativo ignorado.")
+            return None 
+
         financials = acao.financials
         cashflow = acao.cashflow
         
-        # Variáveis base extraídas cedo para uso em cálculos posteriores
-        preco = info.get("currentPrice") or info.get("regularMarketPrice")
         shares = info.get("sharesOutstanding")
-        beta = info.get("beta") if info.get("beta") is not None else 1.0
-        margem = info.get("profitMargins", 0)
+        beta = info.get("beta", 1.0) or 1.0
+        margem = info.get("profitMargins", 0) or 0
         
         setor_original = info.get("sector", "").lower()
         setor = MAPA_SETORES.get(setor_original, setor_original)
@@ -62,7 +62,7 @@ def buscar_dados(ticker, selic_atual):
         # =================================================
         # AJUSTES SETORIAIS MANUAIS (OVERRIDE DO YFINANCE)
         # =================================================
-        if ticker.startswith(("KLBN", "SUZB")): 
+        if ticker.startswith(("KLBN", "SUZB", "RANI")): 
             setor = "papel"
         elif ticker.startswith(("CYRE", "EZTC", "MRVE", "DIRR", "TEND", "CURY")): 
             setor = "construcao"
@@ -72,8 +72,12 @@ def buscar_dados(ticker, selic_atual):
             setor = "seguradora"
         elif ticker.startswith(("VALE", "CMIN")): 
             setor = "mineracao"
-        elif ticker.startswith(("B3SA")): 
+        elif ticker.startswith(("B3SA", "POMO")): 
             setor = "crescimento"
+        elif ticker.startswith(("LREN", "BHIA")):
+            setor = "consumo"
+        elif ticker.startswith(("BEEF", "RAIZ")):
+            setor = "commodities"
 
         # =================================================
         # CAPM AJUSTADO
@@ -120,27 +124,15 @@ def buscar_dados(ticker, selic_atual):
         # =================================================
         # HIGIENIZAÇÃO DE DIVIDENDOS (TRAVA BAZIN)
         # =================================================
-        dividendos = acao.dividends
-        dividendos.index = dividendos.index.tz_localize(None)
-        inicio_12m = pd.Timestamp.now().tz_localize(None) - pd.DateOffset(years=1)
-        dy_bruto = (dividendos[dividendos.index >= inicio_12m].sum() / preco) * 100 if preco else 0
-        
-        dy_ajustado = min(dy_bruto, 12.0)
-        dividendos_bazin = (dy_ajustado / 100) * preco
+        dy_ajustado = min((info.get("dividendYield", 0) or 0) * 100, 12.0)
+        dividendos_bazin = (dy_ajustado / 100) * preco if preco else 0
 
         # =================================================
         # HIGIENIZAÇÃO DE CAGR E CÁLCULO DE FCF
         # =================================================
         lucro_medio = extrair_media_historica(financials, ["Net Income", "Net Income Common Stockholders"])
-        cagr_lucro = 0
-        if "Net Income" in financials.index:
-            lucros = financials.loc["Net Income"].dropna()
-            lucros_pos = lucros[lucros > 0]
-            if len(lucros_pos) >= 2:
-                cagr_bruto = calcular_cagr(lucros_pos.iloc[-1], lucros_pos.iloc[0], len(lucros_pos)-1)
-                cagr_lucro = max(0, min(cagr_bruto, 20.0)) if cagr_bruto else 0
+        cagr_lucro = round(info.get("earningsQuarterlyGrowth", 0) * 100, 2) if info.get("earningsQuarterlyGrowth") else 0
 
-        # Calcula FCF por Ação antes do FCF Yield
         fcf_medio_total = extrair_media_historica(cashflow, ["Free Cash Flow"])
         fcf_medio_acao = (fcf_medio_total / shares) if (fcf_medio_total and shares) else 0
 
@@ -161,21 +153,21 @@ def buscar_dados(ticker, selic_atual):
             "Preço": round(preco, 2) if preco else None,
             "DY (%)": round(dy_ajustado, 2),
             "Dividendos 12M": round(dividendos_bazin, 2),
-            "ROE (%)": round(info.get("returnOnEquity", 0) * 100, 2),
+            "ROE (%)": round(info.get("returnOnEquity", 0) * 100, 2) if info.get("returnOnEquity") else 0,
             "Margem (%)": round(margem * 100, 2) if margem else 0,
             "P/L": round(info.get("trailingPE", 0), 2) if info.get("trailingPE") else None,
             "P/VP": round(info.get("priceToBook", 0), 2) if info.get("priceToBook") else None,
-            "Dívida/PL": round(info.get("debtToEquity", 0), 2),
-            "EBITDA/Ação": (info.get("ebitda", 0) / shares) if shares else 0,
+            "Dívida/PL": round(info.get("debtToEquity", 0) / 100, 2) if info.get("debtToEquity") else 0,
+            "EBITDA/Ação": (info.get("ebitda", 0) / shares) if (shares and info.get("ebitda")) else 0,
             "FCF/Ação (Médio)": fcf_medio_acao,
             "LPA (Médio)": (lucro_medio / shares) if (lucro_medio and shares) else info.get("trailingEps"),
-            "VPA": info.get("bookValue"),
+            "VPA": info.get("bookValue", 0),
             "CAPM (%)": round(taxa_desconto * 100, 2), 
             "FCF Yield (%)": round(fcf_yield, 2),
             "ROIC (%)": round(roic * 100, 2) if roic else 0,
             "Spread ROIC-WACC (%)": round(spread_wacc * 100, 2) if spread_wacc else 0,
             "Volatilidade Lucro": round(cv_lucro, 2) if cv_lucro is not None else None,
-            "CAGR Lucro (%)": round(cagr_lucro, 2),
+            "CAGR Lucro (%)": cagr_lucro,
             "Taxa Desconto": taxa_desconto
         }
     except Exception as e:

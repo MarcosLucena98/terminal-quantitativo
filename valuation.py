@@ -30,7 +30,8 @@ def graham(lpa, vpa):
 
 def pl_justo(lpa, setor, roe, crescimento, margem):
     if not is_valid(lpa) or lpa <= 0: return None
-    teto = {"banco": 11, "eletrica": 12, "commodities": 8, "crescimento": 22}.get(setor, 10)
+    # Adicionado o teto de Consumo (15x) para abarcar as empresas de Varejo
+    teto = {"banco": 11, "eletrica": 12, "commodities": 8, "crescimento": 22, "consumo": 15}.get(setor, 10)
     base = 6 + (roe * 0.15 if is_valid(roe) else 0) + (crescimento * 0.20 if is_valid(crescimento) else 0)
     return lpa * max(4, min(base, teto))
 
@@ -103,6 +104,10 @@ def calcular_valuation(linha):
         v_ev = (linha.get("EBITDA/Ação") * 4.5) if linha.get("EBITDA/Ação") else None
         v_real = media_ponderada([(v_ev, 0.5), (v_graham, 0.3), (v_pl, 0.2)])
         
+    elif setor == "consumo":
+        # Valuation de Varejo/Consumo (Ignora VPA/Graham, foca em Fluxo de Caixa e Lucro)
+        v_real = media_ponderada([(v_dcf, 0.5), (v_pl, 0.5)])
+        
     elif setor in ["crescimento", "construcao"]:
         v_real = media_ponderada([(v_dcf, 0.45), (v_pl, 0.55)])
         
@@ -143,6 +148,8 @@ def calcular_valuation(linha):
             v_real = min(v_real, preco * 1.8)  # Cap reduzido para 80%
         elif setor == "construcao":
             v_real = min(v_real, preco * 1.6)  # Cap reduzido para 60%
+        elif setor == "consumo":
+            v_real = min(v_real, preco * 1.5)  # Cap de 50% para proteger contra volatilidade do varejo
         else:
             v_real = min(v_real, preco * 2.0)  # Máximo absoluto global de 100%
 

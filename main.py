@@ -34,7 +34,7 @@ def obter_selic():
 
 def buscar_dados_multiplos(selic, lista_tickers):
     resultados = []
-    with ThreadPoolExecutor(max_workers=1) as executor:
+    with ThreadPoolExecutor(max_workers=3) as executor:
         futuros = [executor.submit(buscar_dados, ticker, selic) for ticker in lista_tickers]
         for futuro in futuros:
             try:

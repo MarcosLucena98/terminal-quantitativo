@@ -12,11 +12,11 @@ TICKERS = [
     "BBDC4.SA", "SANB11.SA", "BPAC11.SA", "PSSA3.SA",
     
     # Telecom e Papel/Celulose (Defensivas e Exposição ao Dólar)
-    "VIVT3.SA", "TIMS3.SA", "KLBN11.SA", "SUZB3.SA",
+    "VIVT3.SA", "TIMS3.SA", "KLBN11.SA", "SUZB3.SA", "RANI3.SA",
     
     # Crescimento, Qualidade e Commodities 
     "WEGE3.SA", "VALE3.SA", "PRIO3.SA", "CYRE3.SA", "RAIZ4.SA", "MRVE3.SA",
-    "B3SA3.SA", "RENT3.SA", "RADL3.SA", "UNIP3.SA"
+    "B3SA3.SA", "RENT3.SA", "RADL3.SA", "UNIP3.SA", "POMO4.SA", "LREN3.SA", "BHIA3.SA", "BEEF3.SA"
 ]
 
 PASTA_OUTPUT = "output"
