@@ -5,7 +5,6 @@
 import streamlit as st
 import plotly.express as px
 import pandas as pd
-import sqlite3
 import requests
 from streamlit_gsheets import GSheetsConnection
 
@@ -99,7 +98,7 @@ if 'df' not in st.session_state:
 with st.sidebar:
     st.header("⚙️ Controle e Ativos")
     
-    # Puxa todos os tickers e cruza com a sua lista de 30 ações do config.py
+    # Puxa todos os tickers e cruza com a sua lista de ações do config.py
     todos_tickers = obter_todos_tickers_b3()
     padrao_validos = [t for t in TICKERS_PADRAO if t in todos_tickers]
     if not padrao_validos: 
@@ -123,7 +122,26 @@ with st.sidebar:
                     df['Setor Original'] = df['Setor']
                     df['Setor'] = df['Setor'].apply(lambda s: f"{ICON_MAP.get(s, '📊')} {s.title()}")
                     st.session_state['df'] = df
-                    st.success("Dados sincronizados com sucesso.")
+                    
+                    # =================================================
+                    # SALVAR HISTÓRICO NO GOOGLE SHEETS
+                    # =================================================
+                    try:
+                        conn = st.connection("gsheets", type=GSheetsConnection)
+                        df_hist = df.copy()
+                        df_hist['Data_Extracao'] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+                        
+                        try:
+                            hist_antigo = conn.read(worksheet="Historico", ttl=0)
+                            hist_antigo = hist_antigo.dropna(how="all") 
+                            hist_novo = pd.concat([hist_antigo, df_hist], ignore_index=True)
+                        except:
+                            hist_novo = df_hist
+                            
+                        conn.update(worksheet="Historico", data=hist_novo)
+                        st.success("Dados e Histórico sincronizados na nuvem.")
+                    except Exception as e:
+                        st.warning("Dados atualizados, mas falha ao salvar o histórico. Verifica se criaste a aba 'Historico' na folha de cálculo.")
                 else:
                     st.error("Falha na sincronização.")
 
@@ -204,7 +222,7 @@ if df is not None and not df.empty:
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Preço Atual", f"R$ {ativo['Preço']:.2f}")
         m2.metric("Preço Justo Real", f"R$ {ativo['Preço Justo Real']:.2f}", f"{ativo['Desconto (%)']:.2f}%")
-        m3.metric("Bazin (Informativo)", f"R$ {ativo['Preço Justo Bazin']:.2f}")
+        m3.metric("Bazin (Informativo)", f"R$ {ativo.get('Preço Justo Bazin', 0):.2f}")
         m4.metric("Score de Qualidade", f"{ativo['Score']:.2f}", ativo['Recomendação'])
 
         st.divider()
@@ -216,7 +234,7 @@ if df is not None and not df.empty:
         i2.metric("FCF Yield (%)", f"{ativo.get('FCF Yield (%)', 0):.2f}%", "Geração de Caixa")
         vol = ativo.get('Volatilidade Lucro', 0)
         i3.metric("Volatilidade Lucro", f"{vol:.2f}", "Risco (Menor é melhor)", delta_color="inverse")
-        i4.metric("DY Atual (%)", f"{ativo['DY (%)']:.2f}%", f"R$ {ativo['Dividendos 12M']:.2f}/ano")
+        i4.metric("DY Atual (%)", f"{ativo['DY (%)']:.2f}%", f"R$ {ativo.get('Dividendos 12M', 0):.2f}/ano")
 
         modelos_data = {
             "Modelo": ["Atual", "Justo Real", "Bazin", "DCF"],
@@ -243,27 +261,31 @@ if df is not None and not df.empty:
         fig.add_vline(x=7, line_dash="dash", line_color="green")
         st.plotly_chart(fig, use_container_width=True)
 
-    # --- TAB 4: HISTÓRICO ---
+    # --- TAB 4: HISTÓRICO EM NUVEM ---
     with tab4:
-        st.subheader("📈 Evolução do Valuation")
-        st.markdown("*Aviso: Servidores Cloud gratuitos reiniciam periodicamente, podendo limpar este banco SQLite. Use apenas para histórico intradiário.*")
+        st.subheader("📈 Evolução do Valuation (Google Sheets)")
+        st.markdown("*Os dados agora são gravados eternamente na nuvem e não são perdidos no reinício do servidor.*")
         ativo_h = st.selectbox("Ativo Histórico", df['Ticker'].unique(), key="h_box")
         try:
-            with sqlite3.connect("output/historico_valuation.db") as conn:
-                h = pd.read_sql(f"SELECT * FROM historico_acoes WHERE Ticker='{ativo_h}'", conn)
+            conn = st.connection("gsheets", type=GSheetsConnection)
+            h = conn.read(worksheet="Historico", ttl="1m")
+            h = h.dropna(subset=['Ticker'])
+            h = h[h['Ticker'] == ativo_h]
+            
             if not h.empty:
                 h['Data_Extracao'] = pd.to_datetime(h['Data_Extracao'])
-                fig_h = px.line(h, x='Data_Extracao', y=['Preço', 'Preço Justo Real'], template="plotly_dark")
+                fig_h = px.line(h, x='Data_Extracao', y=['Preço', 'Preço Justo Real'], template="plotly_dark", title=f"Evolução: {ativo_h}")
                 st.plotly_chart(fig_h, use_container_width=True)
                 st.dataframe(h.sort_values(by="Data_Extracao", ascending=False), use_container_width=True)
-            else: st.info("Sem histórico para este ativo.")
-        except: st.warning("Banco de dados histórico não encontrado.")
+            else: 
+                st.info("Sem dados de histórico na nuvem para este ativo. Clica em 'Sincronizar' para guardar a primeira foto.")
+        except: 
+            st.warning("Banco de dados histórico não encontrado. Verifica se a aba 'Historico' existe na folha de cálculo.")
 
     # --- TAB 5: MINHA CARTEIRA (PERSISTENTE NA NUVEM) ---
     with tab5:
         st.subheader("💼 Gestão de Carteira na Nuvem (Google Sheets)")
         
-        # Conexão com o Google Sheets configurado nos Secrets do Streamlit
         try:
             conn = st.connection("gsheets", type=GSheetsConnection)
             df_nuvem = conn.read(worksheet="Carteira", ttl="1m")
@@ -272,16 +294,14 @@ if df is not None and not df.empty:
             st.warning("⚠️ Conexão com Google Sheets não configurada ou falhou. Usando banco em memória temporária.")
             df_nuvem = pd.DataFrame(columns=["Ticker", "Quantidade", "PM"])
 
-        st.markdown("Edite as suas Quantidades e Preços Médios abaixo e clique em **Salvar na Nuvem** para não perder os dados.")
+        st.markdown("Edita as tuas Quantidades e Preços Médios abaixo e clica em **Salvar na Nuvem** para não perder os dados.")
 
-        # Prepara a lista de tickers da rodada atual
         tickers_base = pd.DataFrame({"Ticker": df['Ticker']})
         carteira_merged = pd.merge(tickers_base, df_nuvem, on="Ticker", how="left").fillna(0)
         
         carteira_merged["Quantidade"] = carteira_merged["Quantidade"].astype(int)
         carteira_merged["PM"] = carteira_merged["PM"].astype(float)
 
-        # Editor de Dados
         edited_df = st.data_editor(
             carteira_merged,
             hide_index=True,
@@ -293,7 +313,6 @@ if df is not None and not df.empty:
             }
         )
 
-        # Salvar de volta na nuvem
         if st.button("💾 Salvar Alterações na Nuvem"):
             try:
                 df_para_salvar = edited_df[edited_df["Quantidade"] > 0]
@@ -301,25 +320,22 @@ if df is not None and not df.empty:
                 st.success("✅ Carteira sincronizada com o Google Sheets com sucesso!")
                 st.cache_data.clear()
             except Exception as e:
-                st.error(f"Erro ao salvar: {e}. Verifique se a conexão Sheets está ativa.")
+                st.error(f"Erro ao salvar: {e}. Verifica se a conexão Sheets está ativa.")
 
-        # Filtra ativos possuídos para o painel
         carteira_ativa = edited_df[edited_df["Quantidade"] > 0]
         
         if not carteira_ativa.empty:
             df_merge = pd.merge(carteira_ativa, df[['Ticker', 'Preço', 'Dividendos 12M', 'Setor']], on="Ticker")
             
-            # Cálculos Financeiros
             df_merge["Valor Investido"] = df_merge["Quantidade"] * df_merge["PM"]
             df_merge["Saldo Atual"] = df_merge["Quantidade"] * df_merge["Preço"]
             df_merge["Lucro/Prejuízo (R$)"] = df_merge["Saldo Atual"] - df_merge["Valor Investido"]
             
-            # Previne divisão por zero
             df_merge["PM_Valido"] = df_merge["PM"].apply(lambda x: x if x > 0 else 1) 
             df_merge["Rentabilidade (%)"] = ((df_merge["Preço"] / df_merge["PM_Valido"]) - 1) * 100
-            df_merge["YOC (%)"] = (df_merge["Dividendos 12M"] / df_merge["PM_Valido"]) * 100
+            df_merge["YOC (%)"] = (df_merge.get("Dividendos 12M", 0) / df_merge["PM_Valido"]) * 100
             
-            df_merge["Dividendos Estimados (R$)"] = df_merge["Quantidade"] * df_merge["Dividendos 12M"]
+            df_merge["Dividendos Estimados (R$)"] = df_merge["Quantidade"] * df_merge.get("Dividendos 12M", 0)
             
             st.divider()
             st.markdown("### 📊 Painel de Desempenho Real")
@@ -356,8 +372,15 @@ if df is not None and not df.empty:
                 }).background_gradient(subset=["Rentabilidade (%)", "Lucro/Prejuízo (R$)"], cmap="RdYlGn"),
                 use_container_width=True
             )
+            
+            # NOVO: GRÁFICO DE DISTRIBUIÇÃO POR SETOR
+            st.markdown("### 🥧 Exposição por Setores")
+            df_setores = df_merge.groupby("Setor")["Saldo Atual"].sum().reset_index()
+            fig_setores = px.pie(df_setores, values="Saldo Atual", names="Setor", template="plotly_dark", hole=0.4)
+            st.plotly_chart(fig_setores, use_container_width=True)
+            
         else:
-            st.info("👆 Edite a tabela acima adicionando suas quantidades para gerar o painel de carteira.")
+            st.info("👆 Edita a tabela acima adicionando as tuas quantidades para gerar o painel de carteira.")
 
 else:
-    st.info("Aguardando sincronização. Selecione os ativos no painel lateral e clique em 'Sincronizar Mercado'.")
+    st.info("A aguardar sincronização. Seleciona os ativos no painel lateral e clica em 'Sincronizar Mercado'.")

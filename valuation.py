@@ -1,5 +1,5 @@
 # =========================================================
-# valuation.py (VERSÃO PROFISSIONAL CORRIGIDA E CALIBRADA)
+# valuation.py (VERSÃO INSTITUCIONAL: CICLOS, PRÊMIOS E SPREAD)
 # =========================================================
 
 import math
@@ -28,31 +28,30 @@ def dcf_dois_estagios(fcf_acao, taxa_desconto, crescimento_curto, g_perp=0.03, a
 def graham(lpa, vpa):
     return math.sqrt(22.5 * lpa * vpa) if is_valid(lpa) and is_valid(vpa) and lpa > 0 and vpa > 0 else None
 
-def pl_justo(lpa, setor, roe, crescimento, margem):
+# =====================================================
+# P/L JUSTO COM PRÊMIO DE CRIAÇÃO DE VALOR (ROIC SPREAD)
+# =====================================================
+def pl_justo(lpa, setor, roe, crescimento, margem, spread_wacc=0):
     if not is_valid(lpa) or lpa <= 0: return None
-    # Adicionado o teto de Consumo (15x) para abarcar as empresas de Varejo
     teto = {"banco": 11, "eletrica": 12, "commodities": 8, "crescimento": 22, "consumo": 15}.get(setor, 10)
-    base = 6 + (roe * 0.15 if is_valid(roe) else 0) + (crescimento * 0.20 if is_valid(crescimento) else 0)
+    
+    # TESOURO INSTITUCIONAL: ROIC Spread turbinando o múltiplo
+    # Cada 1% de spread positivo adiciona 0.25x no P/L Justo
+    premio_spread = (spread_wacc * 100 * 0.25) if is_valid(spread_wacc) and spread_wacc > 0 else 0
+    
+    base = 6 + (roe * 0.15 if is_valid(roe) else 0) + (crescimento * 0.20 if is_valid(crescimento) else 0) + premio_spread
     return lpa * max(4, min(base, teto))
 
-# =====================================================
-# FUNÇÃO CORRIGIDA: P/VP JUSTO PARA FINANCEIRAS E SEGURADORAS
-# =====================================================
 def pvp_justo(roe, taxa_desconto, crescimento=0):
     try:
         if not is_valid(roe) or not is_valid(taxa_desconto): return None
-        
-        # Teto subiu para 0.60 para permitir ROE alto de Seguradoras
         roe_norm = min(roe / 100, 0.60) 
         g = max((crescimento or 0) / 100, 0)
         ke = max(taxa_desconto, 0.11)
         if g >= ke - 0.02: g = max(0, ke - 0.02)
         numerador = roe_norm - g
         denominador = ke - g
-        
         if denominador <= 0: return None
-        
-        # Multiplicador máximo subiu de 2.5 para 8.0x
         return max(min(numerador / denominador, 8.0), 0.5) 
     except: return None
 
@@ -60,17 +59,15 @@ def calcular_valuation(linha):
     setor = linha.get("Setor")
     preco = linha.get("Preço")
     lpa, vpa = linha.get("LPA (Médio)"), linha.get("VPA")
+    ticker = linha.get("Ticker", "")
     
-    # =====================================================
-    # PREPARAÇÃO E MODELOS BASE
-    # =====================================================
     v_graham = graham(lpa, vpa)
     v_bazin = (linha.get("Dividendos 12M") / 0.06) if linha.get("Dividendos 12M") else None
-    
-    # Ajuste de Perpetuidade para Telecom (Crescimento baixo no longo prazo)
     g_perpetuo_setor = 0.02 if setor == "telecom" else 0.03
     
-    v_pl = pl_justo(lpa, setor, linha.get("ROE (%)"), linha.get("CAGR Lucro (%)"), linha.get("Margem (%)"))
+    # Passando o Spread ROIC-WACC para calcular o prêmio de múltiplo
+    v_pl = pl_justo(lpa, setor, linha.get("ROE (%)"), linha.get("CAGR Lucro (%)"), linha.get("Margem (%)"), linha.get("Spread ROIC-WACC (%)"))
+    
     v_dcf = dcf_dois_estagios(
         linha.get("FCF/Ação (Médio)"), 
         linha.get("Taxa Desconto"), 
@@ -78,15 +75,13 @@ def calcular_valuation(linha):
         g_perp=g_perpetuo_setor
     )
 
-    # Trava DCF primária
     if is_valid(v_dcf) and is_valid(preco): 
         v_dcf = min(v_dcf, preco * 2.5)
 
     # =====================================================
-    # PONDERAÇÃO SETORIAL IDEAL
+    # PONDERAÇÃO SETORIAL
     # =====================================================
     if setor in ["banco", "seguradora"]:
-        # SUBSTITUIÇÃO DO GRAHAM PELO P/VP JUSTO
         m_pvp = pvp_justo(linha.get("ROE (%)"), linha.get("Taxa Desconto"), linha.get("CAGR Lucro (%)"))
         v_pvp = (vpa * m_pvp) if is_valid(vpa) and is_valid(m_pvp) else None
         v_real = media_ponderada([(v_pl, 0.7), (v_pvp, 0.3)])
@@ -94,18 +89,12 @@ def calcular_valuation(linha):
     elif setor in ["eletrica", "saneamento", "telecom"]:
         v_real = media_ponderada([(v_dcf, 0.4), (v_pl, 0.6)])
         
-    elif setor in ["mineracao"]:
-        # Ajustado para 5.5 para dar fôlego a mineradoras premium (ex: VALE3)
-        v_ev = (linha.get("EBITDA/Ação") * 5.5) if linha.get("EBITDA/Ação") else None
-        v_real = media_ponderada([(v_ev, 0.5), (v_graham, 0.3), (v_pl, 0.2)])
-        
-    elif setor in ["commodities", "papel"]:
-        # Ajustado para 4.5 conforme regra institucional para commodity BR
-        v_ev = (linha.get("EBITDA/Ação") * 4.5) if linha.get("EBITDA/Ação") else None
+    elif setor in ["mineracao", "commodities", "papel"]:
+        multiplicador_ev = 5.5 if setor == "mineracao" else 4.5
+        v_ev = (linha.get("EBITDA/Ação") * multiplicador_ev) if linha.get("EBITDA/Ação") else None
         v_real = media_ponderada([(v_ev, 0.5), (v_graham, 0.3), (v_pl, 0.2)])
         
     elif setor == "consumo":
-        # Valuation de Varejo/Consumo (Ignora VPA/Graham, foca em Fluxo de Caixa e Lucro)
         v_real = media_ponderada([(v_dcf, 0.5), (v_pl, 0.5)])
         
     elif setor in ["crescimento", "construcao"]:
@@ -114,46 +103,62 @@ def calcular_valuation(linha):
     else:
         v_real = media_ponderada([(v_pl, 0.5), (v_dcf, 0.3), (v_graham, 0.2)])
 
-    # =====================================================
-    # AJUSTE POR QUALIDADE (SCORE)
-    # =====================================================
+    # Ajuste inicial pelo Score
     score = calcular_score(linha)
     if is_valid(v_real): 
         v_real *= fator_score(score)
     
     # =====================================================
-    # DESCONTOS ESTRUTURAIS (HAIRCUTS)
+    # CAMADA INSTITUCIONAL: PRÊMIOS, HAIRCUTS E DILUIÇÃO
     # =====================================================
-    ticker = linha.get("Ticker", "")
-    estatais = ["BBAS3", "PETR4", "PETR3", "CMIG4", "CMIG3", "SAPR11", "SAPR4", "SBSP3", "CSMG3", "CXSE3"]
-    
+    estatais_hard = ["PETR4", "PETR3", "CMIG4", "CMIG3", "CXSE3"] # Risco Intervenção Direta
+    estatais_soft = ["BBAS3", "SAPR11", "SAPR4", "SBSP3", "CSMG3"] # Governança melhor / Saneamento
+    defensivas_premium = ["TAEE11", "VIVT3", "ISAE4", "TRPL4", "EGIE3"] # Relógios Suíços
+    ciclicas_e_complicadas = ["SUZB3", "KLBN11", "UNIP3", "BEEF3", "RAIZ4", "MRFG3", "JBSS3"] # Value Traps / Topo de Ciclo
+
     if is_valid(v_real):
-        # 1. Risco Político (Desconto de 25%)
-        if ticker in estatais:
-            v_real *= 0.75
+        # 1. Risco Estatal
+        if ticker in estatais_hard: 
+            v_real *= 0.75 
+        elif ticker in estatais_soft: 
+            v_real *= 0.85 
             
-        # 2. Risco Cíclico de Incorporação (Desconto de 20%)
-        if setor == "construcao":
+        # 2. Prêmio de Previsibilidade
+        if ticker in defensivas_premium:
+            v_real *= 1.15 
+            
+        # 3. Haircut Topo de Ciclo / Value Traps
+        if ticker in ciclicas_e_complicadas:
+            v_real *= 0.80 
+
+        # 4. Risco Cíclico de Incorporação
+        if setor == "construcao": 
             v_real *= 0.80
 
+        # 5. Haircut de Diluição / Cash Burn
+        # Se queima caixa e tem alavancagem alta, mercado pune antecipando emissão de ações
+        fcf = linha.get("FCF/Ação (Médio)", 0)
+        divida = linha.get("Dívida/PL", 0)
+        if is_valid(fcf) and fcf < 0 and is_valid(divida) and divida > 1.2:
+            v_real *= 0.85 
+
     # =====================================================
-    # TRAVA DE SEGURANÇA FINAL (CAP DE UPSIDE)
+    # TRAVAS DE UPSIDE
     # =====================================================
     if is_valid(v_real) and is_valid(preco):
-        if setor in ["eletrica", "saneamento", "telecom"]:
-            v_real = min(v_real, preco * 1.7)  # Cap reduzido para 70%
-        elif setor in ["commodities", "mineracao", "papel"]:
-            v_real = min(v_real, preco * 1.5)  # Cap reduzido para 50%
-        elif setor in ["banco", "seguradora"]:
-            v_real = min(v_real, preco * 1.8)  # Cap reduzido para 80%
+        if ticker in ciclicas_e_complicadas:
+            v_real = min(v_real, preco * 1.25) # Cíclicas travadas em +25% máx para forçar status "Neutro"
+        elif ticker in defensivas_premium:
+            v_real = min(v_real, preco * 1.40) 
+        elif setor in ["eletrica", "saneamento", "telecom", "consumo"]:
+            v_real = min(v_real, preco * 1.50)  
         elif setor == "construcao":
-            v_real = min(v_real, preco * 1.6)  # Cap reduzido para 60%
-        elif setor == "consumo":
-            v_real = min(v_real, preco * 1.5)  # Cap de 50% para proteger contra volatilidade do varejo
+            v_real = min(v_real, preco * 1.60)
+        elif setor in ["banco", "seguradora"]:
+            v_real = min(v_real, preco * 1.80)  
         else:
-            v_real = min(v_real, preco * 2.0)  # Máximo absoluto global de 100%
+            v_real = min(v_real, preco * 2.0)  
 
-    # Cálculo do desconto recolocado para enviar ao dicionário final
     desconto = ((v_real - preco) / preco * 100) if is_valid(v_real) and is_valid(preco) else 0
             
     return {

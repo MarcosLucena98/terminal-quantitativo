@@ -1,9 +1,8 @@
 # =========================================================
-# score.py (VERSÃO PROFISSIONAL INSTITUCIONAL)
+# score.py (VERSÃO INSTITUCIONAL: QUALIDADE E MOMENTUM)
 # =========================================================
 
 import math
-
 
 # =========================================================
 # HELPERS
@@ -23,7 +22,6 @@ def limpar(v):
 def clamp(valor, minimo=0, maximo=10):
     return max(min(valor, maximo), minimo)
 
-
 # =========================================================
 # NOTAS DE RENTABILIDADE E PREÇO
 # =========================================================
@@ -41,7 +39,6 @@ def nota_roe(roe, setor):
     nota = (roe / alvo) * 10
     return round(clamp(nota), 2)
 
-
 def nota_margem(margem, setor):
     margem = limpar(margem)
     if margem is None: return 5
@@ -54,7 +51,6 @@ def nota_margem(margem, setor):
 
     nota = (margem / alvo) * 10
     return round(clamp(nota), 2)
-
 
 def nota_pl(pl, setor):
     pl = limpar(pl)
@@ -102,7 +98,6 @@ def nota_pl(pl, setor):
         elif pl <= 20: return 4
         return 2
 
-
 def nota_pvp(pvp, setor):
     pvp = limpar(pvp)
     if pvp is None or pvp <= 0: return 5
@@ -125,7 +120,6 @@ def nota_pvp(pvp, setor):
         nota = 10 - (pvp * 2)
         return round(clamp(nota), 2)
 
-
 # =========================================================
 # DIVIDENDOS E CAIXA
 # =========================================================
@@ -142,7 +136,6 @@ def nota_dy(dy, payout, setor):
     nota = (dy / alvo) * 10
     return round(clamp(nota), 2)
 
-
 def nota_divida(divida, setor):
     divida = limpar(divida)
     if divida is None: return 5
@@ -158,7 +151,6 @@ def nota_divida(divida, setor):
     nota = 10 - (divida * 4)
     return round(clamp(nota), 2)
 
-
 def nota_fcf(fcf, lucro):
     fcf = limpar(fcf)
     lucro = limpar(lucro)
@@ -172,14 +164,12 @@ def nota_fcf(fcf, lucro):
     nota = conversao * 10
     return round(clamp(nota), 2)
 
-
 def nota_crescimento(crescimento):
     crescimento = limpar(crescimento)
     if crescimento is None: return 0
 
     nota = crescimento / 2
     return round(clamp(nota), 2)
-
 
 # =========================================================
 # NOVAS MÉTRICAS INSTITUCIONAIS: EVA E RISCO
@@ -198,20 +188,17 @@ def nota_spread(spread, setor):
     
     return 0 
 
-
 def nota_estabilidade(cv_lucro):
     cv_lucro = limpar(cv_lucro)
     
     if cv_lucro is None: return 5
     
-    # CORREÇÃO: Limites afrouxados para não destruir as empresas Cíclicas
-    if cv_lucro <= 0.25: return 10   # Relógio Suíço 
+    if cv_lucro <= 0.25: return 10   
     elif cv_lucro <= 0.60: return 8
     elif cv_lucro <= 1.00: return 6
     elif cv_lucro <= 2.00: return 4
     
-    return 2 # Montanha-russa severa
-
+    return 2 
 
 # =========================================================
 # PESOS SETORIAIS
@@ -231,7 +218,6 @@ PESOS_SETOR = {
     "default": {"roe": 0.15, "margem": 0.10, "pl": 0.15, "pvp": 0.10, "crescimento": 0.10, "dy": 0.10, "divida": 0.10, "estabilidade": 0.10, "fcf": 0.05, "spread": 0.05}
 }
 
-
 # =========================================================
 # FATOR SCORE
 # =========================================================
@@ -244,9 +230,8 @@ def fator_score(score):
     elif score >= 3: return 0.90
     return 0.75
 
-
 # =========================================================
-# SCORE FINAL
+# SCORE FINAL COM AVALIAÇÃO DE MOMENTO E QUALIDADE
 # =========================================================
 
 def calcular_score(linha):
@@ -278,44 +263,44 @@ def calcular_score(linha):
             n_spread * pesos.get("spread", 0)
         )
 
-        # CORREÇÃO: Divisão pela soma dos pesos para normalização
         soma_pesos = sum(pesos.values())
-        if soma_pesos > 0:
-            score_base = score_bruto / soma_pesos
-        else:
-            score_base = score_bruto
+        score_base = score_bruto / soma_pesos if soma_pesos > 0 else score_bruto
 
         # =====================================================
-        # OVERLAYS QUANTITATIVOS INSTITUCIONAIS 
+        # OVERLAYS QUANTITATIVOS INSTITUCIONAIS (MOMENTO E QUALIDADE)
         # =====================================================
         margem = linha.get("Margem (%)", 0) or 0
         roic = linha.get("ROIC (%)", 0) or 0
         wacc = linha.get("CAPM (%)", 10) or 10
         fcf_yield = linha.get("FCF Yield (%)", 0) or 0
+        cagr = linha.get("CAGR Lucro (%)", 0) or 0
+        m_lucro = linha.get("Momento Lucro (Tri)", 0) or 0
+        m_receita = linha.get("Momento Receita (Tri)", 0) or 0
 
-        # 1. Filtro de Margem Líquida
-        if margem > 20.0:
-            score_base += 0.5
-        elif margem < 5.0:
+        # 1. Filtro de Criação de Valor Real
+        if setor not in ["banco", "seguradora"]: 
+            if roic > 15.0: score_base += 0.5
+            elif roic < wacc: score_base -= 1.0 # Penaliza pesadamente empresas que destroem valor
+
+        # 2. Geração de Caixa Sustentável
+        if setor not in ["banco", "seguradora", "eletrica", "saneamento"]:
+            if fcf_yield > 10.0: score_base += 0.5
+            elif fcf_yield < 3.0: score_base -= 0.5 # Crescer sem caixa vale menos
+
+        # 3. Fragilidade de Margem (Proteção contra Value Traps)
+        if margem < 3.0 and setor not in ["consumo"]: 
             score_base -= 1.0
 
-        # 2. Filtro de Criação de Valor (ROIC vs WACC)
-        if setor not in ["banco", "seguradora"]: 
-            if roic > 15.0:
-                score_base += 0.5
-            elif roic < wacc:
-                score_base -= 1.0
-
-        # 3. Filtro de Geração de Caixa (FCF Yield)
-        # CORREÇÃO: Elétricas e Saneamento imunes a esse filtro (CAPEX alto natural)
-        if setor not in ["banco", "seguradora", "eletrica", "saneamento"]:
-            if fcf_yield > 10.0:
-                score_base += 0.5
-            elif fcf_yield < 3.0:
-                score_base -= 0.5
+        # 4. Momentum Operacional (O que o mercado está comprando AGORA)
+        if cagr < 0:
+            score_base -= 1.0 # Lucro anual caindo
+            
+        if m_lucro > 15.0 and m_receita > 5.0:
+            score_base += 1.0  # Empresa acelerando ganha 1 ponto extra
+        elif m_lucro < -10.0:
+            score_base -= 1.0  # Deterioração de margem/lucro perde 1 ponto
 
         score_final = clamp(score_base, 0, 10)
-
         return round(score_final, 2)
 
     except Exception as e:

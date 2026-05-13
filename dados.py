@@ -34,17 +34,23 @@ def buscar_dados(ticker, selic_atual):
         info = acao.info or {}
         
         # =================================================
-        # EXTRAÇÃO BLINDADA DE PREÇO (PLANO A e PLANO B)
+        # EXTRAÇÃO BLINDADA DE PREÇO (PLANO A, B e C)
         # =================================================
-        preco = info.get("currentPrice") or info.get("regularMarketPrice")
+        preco = None
         
-        # PLANO B: Se o Yahoo "esquecer" de enviar o preço, puxamos pelo histórico diário
-        if not preco:
-            hist = acao.history(period="1d")
+        try:
+            preco = acao.fast_info.last_price
+        except:
+            pass
+            
+        if not preco or preco <= 0:
+            preco = info.get("currentPrice") or info.get("regularMarketPrice")
+            
+        if not preco or preco <= 0:
+            hist = acao.history(period="5d")
             if not hist.empty:
                 preco = float(hist['Close'].iloc[-1])
                 
-        # Se mesmo assim não achar (ação paralisada/sem liquidez), pula e avisa
         if not preco or preco <= 0:
             print(f"⚠️ Preço não encontrado para {ticker}. Ativo ignorado.")
             return None 
@@ -56,11 +62,15 @@ def buscar_dados(ticker, selic_atual):
         beta = info.get("beta", 1.0) or 1.0
         margem = info.get("profitMargins", 0) or 0
         
+        # EXTRAÇÃO DE MOMENTUM (TRIMESTRAL)
+        momento_lucro = info.get("earningsQuarterlyGrowth", 0) or 0
+        momento_receita = info.get("revenueGrowth", 0) or 0
+        
         setor_original = info.get("sector", "").lower()
         setor = MAPA_SETORES.get(setor_original, setor_original)
 
         # =================================================
-        # AJUSTES SETORIAIS MANUAIS (OVERRIDE DO YFINANCE)
+        # AJUSTES SETORIAIS MANUAIS
         # =================================================
         if ticker.startswith(("KLBN", "SUZB", "RANI")): 
             setor = "papel"
@@ -129,20 +139,13 @@ def buscar_dados(ticker, selic_atual):
         dy_real = 0
 
         if not dividendos_historico.empty:
-            # Remove timezone para evitar conflitos na comparação de datas
             dividendos_historico.index = dividendos_historico.index.tz_localize(None)
-            
-            # Define o "corte" do tempo: Exatamente 1 ano atrás a partir de hoje
             inicio_12m = pd.Timestamp.now().tz_localize(None) - pd.DateOffset(years=1)
-            
-            # Filtra a tabela e soma apenas os proventos pagos dentro dessa janela
             soma_dividendos_12m = dividendos_historico[dividendos_historico.index >= inicio_12m].sum()
 
-        # Calcula o DY Real baseado estritamente na nossa soma
         if preco and preco > 0:
             dy_real = (soma_dividendos_12m / preco) * 100
 
-        # Trava Bazin (Usa no máximo 12% para o valuation, mas o painel mostra o DY real)
         dy_ajustado = min(dy_real, 12.0)
         dividendos_bazin = (dy_ajustado / 100) * preco if preco else 0
 
@@ -170,7 +173,7 @@ def buscar_dados(ticker, selic_atual):
             "Setor": setor,
             "Empresa": info.get("longName", ticker),
             "Preço": round(preco, 2) if preco else None,
-            "DY (%)": round(dy_real, 2),  # <-- Alterado para enviar a métrica real para a tela
+            "DY (%)": round(dy_real, 2), 
             "Dividendos 12M": round(dividendos_bazin, 2),
             "ROE (%)": round(info.get("returnOnEquity", 0) * 100, 2) if info.get("returnOnEquity") else 0,
             "Margem (%)": round(margem * 100, 2) if margem else 0,
@@ -187,6 +190,8 @@ def buscar_dados(ticker, selic_atual):
             "Spread ROIC-WACC (%)": round(spread_wacc * 100, 2) if spread_wacc else 0,
             "Volatilidade Lucro": round(cv_lucro, 2) if cv_lucro is not None else None,
             "CAGR Lucro (%)": cagr_lucro,
+            "Momento Lucro (Tri)": round(momento_lucro * 100, 2),
+            "Momento Receita (Tri)": round(momento_receita * 100, 2),
             "Taxa Desconto": taxa_desconto
         }
     except Exception as e:
